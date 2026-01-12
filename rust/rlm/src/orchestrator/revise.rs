@@ -1,4 +1,5 @@
 use crate::llm::types::{LLMChatRequest, LLMProvider};
+use crate::prompts::revise::REVISE_PROMPT;
 use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
 
@@ -62,8 +63,7 @@ fn build_revision_messages(request: &RevisionRequest) -> Vec<ChatMessage> {
     vec![
         ChatMessage {
             role: ChatRole::System,
-            content:
-                "You are revising a previous answer that was rejected. Correct errors, remove unsupported claims, and strictly adhere to the provided context.".to_string(),
+            content: REVISE_PROMPT.to_string(),
         },
         ChatMessage {
             role: ChatRole::User,

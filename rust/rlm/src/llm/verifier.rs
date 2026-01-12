@@ -2,6 +2,7 @@ use crate::llm::types::{LLMChatRequest, LLMProvider};
 use crate::prompts::verify::VERIFY_PROMPT;
 use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
+use crate::utils::logger;
 
 pub struct VerificationRequest {
     pub prompt: String,
@@ -31,7 +32,18 @@ pub async fn verify_with_llm<P: LLMProvider + ?Sized>(
         })
         .await?;
 
-    Ok(parse_verifier_output(&result.content))
+    let parsed = parse_verifier_output(&result.content);
+
+    logger::debug(
+        "verifier.result",
+        Some(serde_json::json!({
+            "approved": parsed.approved,
+            "confidence": parsed.confidence,
+            "notes": parsed.notes,
+        })),
+    );
+
+    Ok(parsed)
 }
 
 fn build_verifier_messages(request: &VerificationRequest) -> Vec<ChatMessage> {

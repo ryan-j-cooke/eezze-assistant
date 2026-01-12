@@ -106,6 +106,8 @@ pub async fn ollama_chat(
         Some(serde_json::json!({
             "model": config.name,
             "latencyMs": latency_ms,
+            "role": data.message.role,
+            "done": data.done,
         })),
     );
 

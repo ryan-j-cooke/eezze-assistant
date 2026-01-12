@@ -18,10 +18,10 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Terminal,
 };
+use tokio::runtime::Runtime;
 
-mod eezze_config;
-
-use crate::eezze_config::{ensure_config_exists, save_config};
+use eezze::run_rlm_server;
+use eezze::eezze_config::{ensure_config_exists, save_config};
 
 /// eezze CLI - helper around Ollama and the recursive LLM server.
 #[derive(Parser, Debug)]
@@ -53,6 +53,8 @@ enum Commands {
 
     /// Run `ollama serve`
     Serve,
+
+    RlmServerInternal,
 }
 
 #[derive(Subcommand, Debug)]
@@ -131,6 +133,7 @@ fn main() -> Result<()> {
             ModelsCommand::List => models_list(),
         },
         Commands::Serve => serve_ollama(),
+        Commands::RlmServerInternal => run_rlm_server_internal(),
     }
 }
 
@@ -178,6 +181,16 @@ fn deps_install() -> Result<()> {
         println!("Unsupported OS for automatic Ollama installation. Please visit https://ollama.com/download.");
     }
 
+    Ok(())
+}
+
+fn run_rlm_server_internal() -> Result<()> {
+    let rt = Runtime::new().context("failed to create Tokio runtime")?;
+    let result = rt.block_on(run_rlm_server());
+    if let Err(err) = result {
+        eprintln!("❌ Failed to start server: {}", err);
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -267,16 +280,24 @@ fn serve_ollama() -> Result<()> {
         .context("failed to start `ollama serve`")?;
 
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
-    let rlm_path = current_exe
-        .parent()
-        .map(|p| p.join("rlm"))
-        .ok_or_else(|| anyhow::anyhow!("could not determine rlm binary path"))?;
 
-    let mut rlm_child = Command::new(rlm_path)
+    thread::sleep(Duration::from_secs(1));
+    if let Some(status) = ollama_child
+        .try_wait()
+        .context("failed to poll `ollama serve` status")?
+    {
+        return Err(anyhow::anyhow!(
+            "`ollama serve` exited early with status {}",
+            status
+        ));
+    }
+
+    let mut rlm_child = Command::new(current_exe)
+        .arg("rlm-server-internal")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("failed to start `rlm` server")?;
+        .context("failed to start `runRlmServer`")?;
 
     let ollama_stdout = ollama_child
         .stdout

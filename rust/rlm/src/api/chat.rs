@@ -223,52 +223,50 @@ async fn chat_completions_handler(
         return res;
     }
 
+    // Emit an initial "starting" status so VS Code always gets a valid SSE stream
+    let mut chunks = vec![crate::api::models::make_status_sse(
+        "Starting request...".to_string(),
+        Some("init"),
+        None,
+    )];
+
     let (result, duration_ms) = timer::measure(|| handle_chat_completion(body)).await;
 
     match result {
-        Ok(chunks) => {
+        Ok(mut more_chunks) => {
             logger::info(
                 "chat.completion.success",
                 Some(json!({ "latencyMs": duration_ms })),
             );
-
-            // Stream all collected SSE chunks (status + final response)
-            let mut body_str = String::new();
-            for chunk in chunks {
-                body_str.push_str(&chunk);
-            }
-
-            let mut res = Response::new(Body::from(body_str));
-            let headers = res.headers_mut();
-            headers.insert(
-                "Content-Type",
-                HeaderValue::from_static("text/event-stream"),
-            );
-            headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
-            headers.insert("Connection", HeaderValue::from_static("keep-alive"));
-            res
+            chunks.append(&mut more_chunks);
         }
         Err(err) => {
             logger::error(
                 "chat.completion.failed",
                 Some(json!({ "error": err.to_string() })),
             );
-
-            let mut res = Response::new(Body::from(format_sse_event(&json!({
-                "error": {
-                    "message": "Internal server error",
-                    "type": "internal_error",
-                }
-            }))));
-            *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            let headers = res.headers_mut();
-            headers.insert(
-                "Content-Type",
-                HeaderValue::from_static("text/event-stream"),
-            );
-            headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
-            headers.insert("Connection", HeaderValue::from_static("keep-alive"));
-            res
+            // Emit a fallback chat response so VS Code gets a valid OpenAI shape
+            let fallback_id = format!("chatcmpl-{}", Uuid::new_v4());
+            chunks.push(crate::utils::stream::make_chat_chunk(&fallback_id, "fallback", None, None)); // role-only
+            chunks.push(crate::utils::stream::make_chat_chunk(&fallback_id, "fallback", Some("I’m sorry, I couldn’t process that request.".to_string()), Some("stop")));
         }
     }
+
+    // Always terminate with [DONE] so VS Code knows the stream ended
+    chunks.push("data: [DONE]\n\n".to_string());
+
+    let mut body_str = String::new();
+    for chunk in chunks {
+        body_str.push_str(&chunk);
+    }
+
+    let mut res = Response::new(Body::from(body_str));
+    let headers = res.headers_mut();
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+    headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+    res
 }

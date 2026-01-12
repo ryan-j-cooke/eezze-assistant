@@ -13,7 +13,7 @@ use crate::index::retrieve::review_response;
 use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
 use crate::utils::logger;
-use crate::utils::stream::make_status_chunk;
+use crate::api::models::make_status_sse;
 
 pub struct LoopOptions<'a, P: LLMProvider + ?Sized> {
     pub provider: &'a P,
@@ -59,7 +59,7 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
     let min_confidence = options.min_confidence.unwrap_or(0.75);
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_chunk("Starting reasoning loop".to_string(), Some("orchestrator")));
+        on_status(make_status_sse("Starting reasoning loop".to_string(), Some("orchestrator"), None));
     }
 
     logger::debug(
@@ -80,9 +80,10 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
         state.attempts += 1;
 
         if let Some(ref on_status) = options.on_status {
-            on_status(make_status_chunk(
+            on_status(make_status_sse(
                 format!("Attempt {} with model {}", state.attempts, state.current_model.name),
                 Some("orchestrator"),
+                None,
             ));
         }
 
@@ -236,7 +237,7 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
     );
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_chunk("Generating plan...".to_string(), Some("planning")));
+        on_status(make_status_sse("Generating plan...".to_string(), Some("planning"), None));
     }
 
     let plan_messages = generate_plan(options.provider, planning_model.clone(), prompt).await?;
@@ -274,7 +275,7 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
 
     // 3) Final verification of the chosen answer (LLM verifier + embeddings)
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_chunk("Verifying answer...".to_string(), Some("verification")));
+        on_status(make_status_sse("Verifying answer...".to_string(), Some("verification"), None));
     }
 
     let final_verdict = verify_with_llm(
@@ -329,7 +330,7 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
     );
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_chunk("Revising answer...".to_string(), Some("revision")));
+        on_status(make_status_sse("Revising answer...".to_string(), Some("revision"), None));
     }
 
     let revision = revise_response(

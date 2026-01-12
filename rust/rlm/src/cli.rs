@@ -1,5 +1,6 @@
 use std::env;
 use std::io::{self, BufRead, BufReader};
+use std::net::TcpStream;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -269,28 +270,44 @@ fn models_list() -> Result<()> {
     Ok(())
 }
 
+fn is_ollama_running() -> bool {
+    // Try to connect to Ollama's default port 11434
+    match TcpStream::connect("127.0.0.1:11434") {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
 fn serve_ollama() -> Result<()> {
     println!("Starting `ollama serve` and `rlm` server (press Ctrl+C or 'q' to stop UI)...");
 
-    let mut ollama_child = Command::new("ollama")
-        .arg("serve")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("failed to start `ollama serve`")?;
+    // Check if Ollama is already running on port 11434
+    let mut ollama_child = if is_ollama_running() {
+        println!("Ollama is already running on port 11434. Skipping Ollama startup.");
+        None
+    } else {
+        println!("Starting Ollama server...");
+        let mut child = Command::new("ollama")
+            .arg("serve")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("failed to start `ollama serve`")?;
+
+        thread::sleep(Duration::from_secs(1));
+        if let Some(status) = child
+            .try_wait()
+            .context("failed to poll `ollama serve` status")?
+        {
+            return Err(anyhow::anyhow!(
+                "`ollama serve` exited early with status {}",
+                status
+            ));
+        }
+        Some(child)
+    };
 
     let current_exe = env::current_exe().context("failed to determine current executable path")?;
-
-    thread::sleep(Duration::from_secs(1));
-    if let Some(status) = ollama_child
-        .try_wait()
-        .context("failed to poll `ollama serve` status")?
-    {
-        return Err(anyhow::anyhow!(
-            "`ollama serve` exited early with status {}",
-            status
-        ));
-    }
 
     let mut rlm_child = Command::new(current_exe)
         .arg("rlm-server-internal")
@@ -299,14 +316,51 @@ fn serve_ollama() -> Result<()> {
         .spawn()
         .context("failed to start `runRlmServer`")?;
 
-    let ollama_stdout = ollama_child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("failed to capture ollama stdout"))?;
-    let ollama_stderr = ollama_child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("failed to capture ollama stderr"))?;
+    let (tx, rx) = mpsc::channel::<UiEvent>();
+
+    // Only spawn Ollama reader threads if Ollama was started
+    if let Some(ref mut child) = ollama_child {
+        let ollama_stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to capture ollama stdout"))?;
+        let ollama_stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("failed to capture ollama stderr"))?;
+
+        {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(ollama_stdout);
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        if tx.send(UiEvent::TopLine(line)).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
+
+        {
+            let tx = tx.clone();
+            thread::spawn(move || {
+                let reader = BufReader::new(ollama_stderr);
+                for line in reader.lines() {
+                    if let Ok(line) = line {
+                        if tx.send(UiEvent::TopLine(line)).is_err() {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            });
+        }
+    }
 
     let rlm_stdout = rlm_child
         .stdout
@@ -316,40 +370,6 @@ fn serve_ollama() -> Result<()> {
         .stderr
         .take()
         .ok_or_else(|| anyhow::anyhow!("failed to capture rlm stderr"))?;
-
-    let (tx, rx) = mpsc::channel::<UiEvent>();
-
-    {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(ollama_stdout);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if tx.send(UiEvent::TopLine(line)).is_err() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
-
-    {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let reader = BufReader::new(ollama_stderr);
-            for line in reader.lines() {
-                if let Ok(line) = line {
-                    if tx.send(UiEvent::TopLine(line)).is_err() {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
-        });
-    }
 
     {
         let tx = tx.clone();
@@ -393,21 +413,23 @@ fn serve_ollama() -> Result<()> {
     let mut app = AppState::new();
     let mut should_quit = false;
     let mut saw_children_done = false;
-    let mut ollama_done = false;
+    let mut ollama_done = ollama_child.is_none(); // If no Ollama child, consider it done
     let mut rlm_done = false;
     let mut children_done_sent = false;
 
     while !should_quit {
         if !ollama_done {
-            if let Some(status) = ollama_child
-                .try_wait()
-                .context("failed while polling `ollama serve` status")?
-            {
-                ollama_done = true;
-                let _ = tx.send(UiEvent::TopLine(format!(
-                    "`ollama serve` exited with status {}",
-                    status
-                )));
+            if let Some(ref mut child) = ollama_child {
+                if let Some(status) = child
+                    .try_wait()
+                    .context("failed while polling `ollama serve` status")?
+                {
+                    ollama_done = true;
+                    let _ = tx.send(UiEvent::TopLine(format!(
+                        "`ollama serve` exited with status {}",
+                        status
+                    )));
+                }
             }
         }
 
@@ -521,9 +543,13 @@ fn serve_ollama() -> Result<()> {
     }
 
     if !ollama_done {
-        let _ = ollama_child.kill();
+        if let Some(ref mut child) = ollama_child {
+            let _ = child.kill();
+        }
     }
-    let _ = ollama_child.wait();
+    if let Some(ref mut child) = ollama_child {
+        let _ = child.wait();
+    }
 
     if !rlm_done {
         let _ = rlm_child.kill();

@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{self, Event as CEvent, KeyCode},
+    event::{self, Event as CEvent, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -383,15 +383,6 @@ fn serve_ollama() -> Result<()> {
         });
     }
 
-    {
-        let tx = tx.clone();
-        thread::spawn(move || {
-            let _ = ollama_child.wait();
-            let _ = rlm_child.wait();
-            let _ = tx.send(UiEvent::ChildrenDone);
-        });
-    }
-
     enable_raw_mode().context("failed to enable raw mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen).context("failed to enter alternate screen")?;
@@ -402,8 +393,42 @@ fn serve_ollama() -> Result<()> {
     let mut app = AppState::new();
     let mut should_quit = false;
     let mut saw_children_done = false;
+    let mut ollama_done = false;
+    let mut rlm_done = false;
+    let mut children_done_sent = false;
 
     while !should_quit {
+        if !ollama_done {
+            if let Some(status) = ollama_child
+                .try_wait()
+                .context("failed while polling `ollama serve` status")?
+            {
+                ollama_done = true;
+                let _ = tx.send(UiEvent::TopLine(format!(
+                    "`ollama serve` exited with status {}",
+                    status
+                )));
+            }
+        }
+
+        if !rlm_done {
+            if let Some(status) = rlm_child
+                .try_wait()
+                .context("failed while polling `runRlmServer` status")?
+            {
+                rlm_done = true;
+                let _ = tx.send(UiEvent::BottomLine(format!(
+                    "`runRlmServer` exited with status {}",
+                    status
+                )));
+            }
+        }
+
+        if ollama_done && rlm_done && !children_done_sent {
+            let _ = tx.send(UiEvent::ChildrenDone);
+            children_done_sent = true;
+        }
+
         while let Ok(event) = rx.try_recv() {
             match event {
                 UiEvent::TopLine(line) => app.push_top(line),
@@ -477,8 +502,11 @@ fn serve_ollama() -> Result<()> {
 
         if event::poll(Duration::from_millis(50)).context("failed to poll events")? {
             if let CEvent::Key(key) = event::read().context("failed to read event")? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => {
+                match (key.code, key.modifiers) {
+                    (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
+                        should_quit = true;
+                    }
+                    (KeyCode::Char('c'), mods) if mods.contains(KeyModifiers::CONTROL) => {
                         should_quit = true;
                     }
                     _ => {}
@@ -490,6 +518,16 @@ fn serve_ollama() -> Result<()> {
             should_quit = true;
         }
     }
+
+    if !ollama_done {
+        let _ = ollama_child.kill();
+    }
+    let _ = ollama_child.wait();
+
+    if !rlm_done {
+        let _ = rlm_child.kill();
+    }
+    let _ = rlm_child.wait();
 
     disable_raw_mode().context("failed to disable raw mode")?;
     let mut stdout = io::stdout();

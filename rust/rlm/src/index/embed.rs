@@ -7,7 +7,7 @@ use crate::utils::logger;
 #[derive(Debug, Serialize)]
 struct OllamaEmbeddingRequest<'a> {
     model: &'a str,
-    prompt: &'a str,
+    input: &'a str,
 }
 
 #[derive(Debug, Deserialize)]
@@ -22,7 +22,22 @@ pub async fn handle_embeddings(
     model: &str,
     normalize: bool,
 ) -> anyhow::Result<EmbedResult> {
-    let request = OllamaEmbeddingRequest { model, prompt: text };
+    let truncated = truncate_for_embedding(text);
+
+    logger::debug(
+        "embeddings.request",
+        Some(serde_json::json!({
+            "model": model,
+            "originalLen": text.len(),
+            "truncatedLen": truncated.len(),
+            "normalized": normalize,
+        })),
+    );
+
+    let request = OllamaEmbeddingRequest {
+        model,
+        input: truncated,
+    };
 
     let response = client
         .post("http://localhost:11434/api/embeddings")
@@ -31,17 +46,24 @@ pub async fn handle_embeddings(
         .await?;
 
     if !response.status().is_success() {
-        anyhow::bail!(
-            "Embedding request failed ({})",
-            response.status().as_u16()
+        let status = response.status().as_u16();
+        let body_text = response.text().await.unwrap_or_else(|_| "<body read error>".to_string());
+
+        logger::error(
+            "embeddings.http_error",
+            Some(serde_json::json!({
+                "status": status,
+                "model": model,
+                "body": body_text,
+                "originalLen": text.len(),
+                "truncatedLen": truncated.len(),
+            })),
         );
+
+        anyhow::bail!("Embedding request failed ({})", status);
     }
 
     let data: OllamaEmbeddingResponse = response.json().await?;
-
-    if data.embedding.is_empty() {
-        anyhow::bail!("Invalid embedding response from Ollama");
-    }
 
     let mut vector = data.embedding;
 
@@ -77,4 +99,19 @@ fn normalize_vector(vector: &[f32]) -> Vec<f32> {
     }
 
     vector.iter().map(|v| v / norm).collect()
+}
+
+fn truncate_for_embedding(text: &str) -> &str {
+    const MAX_CHARS: usize = 8000;
+
+    if text.len() <= MAX_CHARS {
+        return text;
+    }
+
+    let mut end = MAX_CHARS;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    &text[..end]
 }

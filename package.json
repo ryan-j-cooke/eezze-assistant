@@ -1,0 +1,23 @@
+{
+    "name": "local-recursive-llm",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Local-first recursive LLM orchestrator with verification and embeddings",
+    "scripts": {
+        "dev": "tsx watch src/main.ts",
+        "build": "tsc",
+        "start": "node dist/src/main.js",
+        "lint": "eslint ."
+    },
+    "dependencies": {
+        "better-sqlite3": "^9.6.0",
+        "express": "^4.18.2"
+    },
+    "devDependencies": {
+        "@types/express": "^4.17.17",
+        "@types/node": "^20.11.0",
+        "tsx": "^4.7.0",
+        "typescript": "^5.9.3"
+    }
+}

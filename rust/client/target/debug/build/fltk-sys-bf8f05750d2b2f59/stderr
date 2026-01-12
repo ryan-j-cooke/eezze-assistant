@@ -1,0 +1,14 @@
+running: cd "/projects/eezze-assistant/rust/target/debug/build/fltk-sys-bf8f05750d2b2f59/out/build" && CMAKE_PREFIX_PATH="" LC_ALL="C" "cmake" "/home/theguy/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/fltk-sys-1.5.22/cfltk" "-B" "/projects/eezze-assistant/rust/target/debug/build/fltk-sys-bf8f05750d2b2f59/out/build" "-DCFLTK_SYSTEM_PNG=OFF" "-DFLTK_USE_SYSTEM_LIBPNG=OFF" "-DCFLTK_SYSTEM_PNG=OFF" "-DFLTK_USE_SYSTEM_LIBJPEG=OFF" "-DCFLTK_SYSTEM_PNG=OFF" "-DFLTK_USE_SYSTEM_ZLIB=OFF" "-DCFLTK_LINK_IMAGES=ON" "-DOpenGL_GL_PREFERENCE=GLVND" "-DFLTK_BUILD_GL=OFF" "-DCFLTK_USE_OPENGL=OFF" "-DFLTK_USE_PANGO=ON" "-DFLTK_GRAPHICS_CAIRO=ON" "-DFLTK_BACKEND_WAYLAND=OFF" "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON" "-DCFLTK_CARGO_BUILD=ON" "-DFLTK_BUILD_EXAMPLES=OFF" "-DFLTK_BUILD_TEST=OFF" "-DFLTK_BUILD_FLUID=OFF" "-DFLTK_BUILD_FLTK_OPTIONS=OFF" "-DFLTK_OPTION_LARGE_FILE=ON" "-DFLTK_BUILD_HTML_DOCS=OFF" "-DFLTK_BUILD_PDF_DOCS=OFF" "-DCMAKE_INSTALL_PREFIX=/projects/eezze-assistant/rust/target/debug/build/fltk-sys-bf8f05750d2b2f59/out" "-DCMAKE_C_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_C_COMPILER=/usr/bin/cc" "-DCMAKE_CXX_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_CXX_COMPILER=/usr/bin/c++" "-DCMAKE_ASM_FLAGS= -ffunction-sections -fdata-sections -fPIC -m64 -w" "-DCMAKE_ASM_COMPILER=/usr/bin/cc" "-DCMAKE_BUILD_TYPE=Debug"
+
+
+
+
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_ASM_COMPILER
+    CMAKE_ASM_FLAGS
+    OpenGL_GL_PREFERENCE
+
+
+running: cd "/projects/eezze-assistant/rust/target/debug/build/fltk-sys-bf8f05750d2b2f59/out/build" && LC_ALL="C" MAKEFLAGS="-j --jobserver-fds=9,11 --jobserver-auth=9,11" "cmake" "--build" "/projects/eezze-assistant/rust/target/debug/build/fltk-sys-bf8f05750d2b2f59/out/build" "--target" "install" "--config" "Debug"

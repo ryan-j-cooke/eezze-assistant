@@ -5,10 +5,18 @@ use std::path::Path;
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::signal;
 
+mod api;
+mod llm;
+mod orchestrator;
 mod server;
+mod types;
+mod index;
+mod utils;
+mod prompts;
 
 use crate::server::http::create_server;
 

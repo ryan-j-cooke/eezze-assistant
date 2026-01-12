@@ -17,6 +17,7 @@ mod types;
 mod index;
 mod utils;
 mod prompts;
+mod eezze_config;
 
 use crate::server::http::create_server;
 
@@ -229,6 +230,11 @@ async fn shutdown_signal() {
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // Ensure user-level eezze config (~/.config/eezze/config.json) exists with default model names.
+    if let Err(err) = crate::eezze_config::ensure_config_exists() {
+        eprintln!("startup.eezzeConfig.error: {}", err);
+    }
+
     let config = load_config()?;
 
     let client = Client::new();

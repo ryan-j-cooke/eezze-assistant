@@ -15,3 +15,13 @@ hex = "0.4"
 anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["clock"] }
+dirs-next = "2"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "rlm"
+path = "src/main.rs"
+
+[[bin]]
+name = "eezze"
+path = "src/cli.rs"

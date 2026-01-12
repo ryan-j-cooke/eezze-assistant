@@ -3,16 +3,18 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 
-use axum::{routing::get, Json, Router};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tokio::net::TcpListener;
 use tokio::signal;
 
-const EXPERT_RECURSIVE_LOCAL: &str = "recursive-local";
-const EXPERT_FAST_MODEL: &str = "qwen2.5-1b";
-const EXPERT_REVIEWER_MODEL: &str = "qwen2.5-0.5b";
+mod server;
+
+use crate::server::http::create_server;
+
+const EXPERT_RECURSIVE_LOCAL: &str = "qwen2.5:3b";
+const EXPERT_FAST_MODEL: &str = "qwen2.5:1.5b";
+const EXPERT_REVIEWER_MODEL: &str = "qwen2.5:0.5b";
 const EXPERT_EMBEDDING_DEFAULT: &str = "nomic-embed-text";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,7 +67,7 @@ struct IndexConfig {
 fn default_config() -> RuntimeConfig {
     RuntimeConfig {
         server: ServerConfig {
-            host: Some("127.0.0.1".to_string()),
+            host: Some("0.0.0.0".to_string()),
             port: 4000,
         },
         models: {
@@ -191,10 +193,6 @@ async fn check_dependencies(
     Ok(())
 }
 
-async fn health_handler() -> Json<serde_json::Value> {
-    Json(json!({ "status": "ok" }))
-}
-
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
@@ -235,7 +233,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| "0.0.0.0".to_string());
     let addr: SocketAddr = format!("{}:{}", host, config.server.port).parse()?;
 
-    let app = Router::new().route("/health", get(health_handler));
+    let app = create_server();
 
     println!("🚀 Recursive LLM server running at http://{}", addr);
 

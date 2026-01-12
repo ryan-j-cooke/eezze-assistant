@@ -1,7 +1,15 @@
 use crate::llm::types::{LLMChatRequest, LLMProvider};
 use crate::llm::verifier::{verify_with_llm, VerificationRequest};
-use crate::orchestrator::confidence::{combine_confidence, is_confidence_acceptable, should_escalate};
+use crate::orchestrator::confidence::{
+    combine_confidence,
+    is_confidence_acceptable,
+    should_escalate,
+    ConfidenceInputs,
+};
 use crate::orchestrator::escalate::{escalate_model, EscalationPolicy, EscalationState};
+use crate::orchestrator::plan::generate_plan;
+use crate::orchestrator::revise::{revise_response, RevisionRequest};
+use crate::index::retrieve::review_response;
 use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
 use crate::utils::logger;
@@ -22,6 +30,18 @@ pub struct LoopResult {
     pub attempts: u32,
 }
 
+pub struct RecursiveOptions<'a, P: LLMProvider + ?Sized> {
+    pub provider: &'a P,
+    pub planning_model: ModelConfig,
+    pub initial_model: ModelConfig,
+    pub verifier_model: ModelConfig,
+    pub revision_model: ModelConfig,
+    pub escalation_policy: EscalationPolicy,
+    pub max_retries: Option<u32>,
+    pub min_confidence: Option<f64>,
+}
+
+#[allow(unused_assignments)]
 pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
     prompt: &str,
     context: &[String],
@@ -57,6 +77,7 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
             Some(serde_json::json!({
                 "attempt": state.attempts,
                 "model": state.current_model.name,
+                "provider": options.provider.name(),
             })),
         );
 
@@ -76,6 +97,8 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
             Some(serde_json::json!({
                 "attempt": state.attempts,
                 "model": state.current_model.name,
+                "completionModel": completion.model,
+                "finishReason": completion.finish_reason,
                 "contentPreview": completion.content.chars().take(160).collect::<String>(),
             })),
         );
@@ -178,6 +201,134 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
         model: state.current_model.name,
         confidence: last_confidence,
         attempts: state.attempts,
+    })
+}
+
+pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
+    prompt: &str,
+    context: &[String],
+    options: RecursiveOptions<'_, P>,
+) -> anyhow::Result<LoopResult> {
+    let planning_model = options.planning_model.clone();
+    let revision_model = options.revision_model.clone();
+    let min_confidence = options.min_confidence.unwrap_or(0.75);
+
+    // 1) Planning phase
+    logger::debug(
+        "orchestrator.plan.start",
+        Some(serde_json::json!({
+            "model": planning_model.name,
+        })),
+    );
+
+    let plan_messages = generate_plan(options.provider, planning_model.clone(), prompt).await?;
+    let plan_message = plan_messages
+        .last()
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    let mut enriched_context: Vec<String> = context.to_vec();
+    enriched_context.push(format!("PLAN:\n{}", plan_message));
+
+    logger::debug(
+        "orchestrator.plan.result",
+        Some(serde_json::json!({
+            "model": planning_model.name,
+            "planPreview": plan_message.chars().take(200).collect::<String>(),
+        })),
+    );
+
+    // 2) Core orchestrator loop using the enriched context
+    let loop_result = run_orchestrator(
+        prompt,
+        &enriched_context,
+        LoopOptions {
+            provider: options.provider,
+            initial_model: options.initial_model.clone(),
+            verifier_model: options.verifier_model.clone(),
+            escalation_policy: options.escalation_policy,
+            max_retries: options.max_retries,
+            min_confidence: options.min_confidence,
+        },
+    )
+    .await?;
+
+    // 3) Final verification of the chosen answer (LLM verifier + embeddings)
+    let final_verdict = verify_with_llm(
+        options.provider,
+        options.verifier_model.clone(),
+        VerificationRequest {
+            prompt: prompt.to_string(),
+            response: loop_result.content.clone(),
+            context: enriched_context.clone(),
+        },
+    )
+    .await?;
+
+    let embed_review = review_response(prompt, &loop_result.content, &enriched_context).await?;
+
+    let final_confidence = combine_confidence(ConfidenceInputs {
+        model_confidence: None,
+        verifier_confidence: Some(final_verdict.confidence),
+        embedding_score: Some(embed_review.confidence),
+    });
+
+    logger::debug(
+        "orchestrator.final_verifier_result",
+        Some(serde_json::json!({
+            "approvedVerifier": final_verdict.approved,
+            "verifierConfidence": final_verdict.confidence,
+            "approvedEmbeddings": embed_review.approved,
+            "embeddingConfidence": embed_review.confidence,
+            "embeddingNotes": embed_review.notes,
+            "combinedConfidence": final_confidence,
+        })),
+    );
+
+    if final_verdict.approved
+        && embed_review.approved
+        && is_confidence_acceptable(final_confidence, min_confidence)
+    {
+        return Ok(LoopResult {
+            content: loop_result.content,
+            model: loop_result.model,
+            confidence: final_confidence,
+            attempts: loop_result.attempts,
+        });
+    }
+
+    // 4) Revision phase if the final answer is still not acceptable
+    logger::info(
+        "orchestrator.revise.start",
+        Some(serde_json::json!({
+            "model": revision_model.name,
+        })),
+    );
+
+    let revision = revise_response(
+        options.provider,
+        revision_model.clone(),
+        &RevisionRequest {
+            original_prompt: prompt.to_string(),
+            previous_response: loop_result.content,
+            context: enriched_context,
+            reviewer_notes: None,
+        },
+    )
+    .await?;
+
+    logger::info(
+        "orchestrator.revise.result",
+        Some(serde_json::json!({
+            "model": revision.model,
+        })),
+    );
+
+    Ok(LoopResult {
+        content: revision.content,
+        model: revision.model,
+        confidence: final_confidence,
+        attempts: loop_result.attempts,
     })
 }
 

@@ -1,12 +1,6 @@
-// here
+// Embedding-based review helpers used by the orchestrator's higher-level recursive session.
 use crate::index::embed::handle_embeddings;
-use crate::llm::ollama::ollama_chat;
-use crate::llm::types::{LLMChatRequest, LLMProvider, LLMChatResponse};
-use crate::orchestrator::confidence::combine_confidence;
-use crate::orchestrator::r#loop::{run_orchestrator, LoopOptions};
-use crate::types::config::{ModelConfig, ModelProvider};
-use crate::types::chat::{ChatMessage, ChatRole};
-use crate::utils::logger;
+use crate::orchestrator::confidence::{combine_confidence, ConfidenceInputs};
 
 use reqwest::Client;
 
@@ -15,63 +9,6 @@ pub struct ReviewResult {
     pub confidence: f64,
     pub notes: Option<String>,
 }
-
-struct OllamaProvider {
-    client: Client,
-}
-
-#[async_trait::async_trait]
-impl LLMProvider for OllamaProvider {
-    fn name(&self) -> &str {
-        "ollama"
-    }
-
-    async fn chat(&self, request: LLMChatRequest) -> anyhow::Result<LLMChatResponse> {
-        let content = ollama_chat(&self.client, &request.model, &request.messages, request.stream).await?;
-        Ok(LLMChatResponse {
-            content,
-            model: request.model.name.clone(),
-            finish_reason: Some("stop".to_string()),
-        })
-    }
-}
-
-/// Minimal chat wrapper for a single request.
-pub async fn chat(
-    model: ModelConfig,
-    messages: Vec<ChatMessage>,
-) -> anyhow::Result<String> {
-    let provider = OllamaProvider {
-        client: Client::new(),
-    };
-
-    let last_message_content = messages
-        .last()
-        .map(|m| m.content.clone())
-        .unwrap_or_default();
-
-    let context: Vec<String> = messages.iter().map(|m| m.content.clone()).collect();
-
-    let result = run_orchestrator(
-        &last_message_content,
-        &context,
-        LoopOptions {
-            provider: &provider,
-            initial_model: model.clone(),
-            verifier_model: model.clone(),
-            escalation_policy: crate::orchestrator::escalate::EscalationPolicy {
-                max_attempts: 1,
-                ladder: vec![model.clone()],
-            },
-            max_retries: Some(1),
-            min_confidence: Some(0.75),
-        },
-    )
-    .await?;
-
-    Ok(result.content)
-}
-
 /// Embedding-based semantic verification.
 pub async fn review_response(
     prompt: &str,
@@ -84,7 +21,11 @@ pub async fn review_response(
 
     let mut max_score = 0.0_f32;
 
-    for chunk in context {
+    // Include the original prompt as another semantic reference point.
+    let mut enriched_context: Vec<String> = context.to_vec();
+    enriched_context.push(prompt.to_string());
+
+    for chunk in &enriched_context {
         let context_embedding = handle_embeddings(&client, chunk, "nomic-embed-text", true).await?;
 
         let score = cosine_similarity(&response_embedding.vector, &context_embedding.vector);
@@ -93,10 +34,10 @@ pub async fn review_response(
         }
     }
 
-    let confidence = combine_confidence(crate::orchestrator::confidence::ConfidenceInputs {
+    let confidence = combine_confidence(ConfidenceInputs {
         model_confidence: None,
-        verifier_confidence: Some(max_score as f64),
-        embedding_score: None,
+        verifier_confidence: None,
+        embedding_score: Some(max_score as f64),
     });
 
     Ok(ReviewResult {

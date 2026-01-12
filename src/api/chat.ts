@@ -6,7 +6,8 @@ import { ModelConfig } from '../types/config';
 import { LLMProvider } from '../llm/types';
 import { ollamaChat } from '../llm/ollama';
 import { EscalationPolicy } from '../orchestrator/escalate';
-import { runOrchestrator } from '../orchestrator/loop';
+import { runRecursiveSession } from '../orchestrator/loop';
+import { EXPERT_FAST_MODEL, EXPERT_REVIEWER_MODEL } from '../../eezze.config';
 
 export async function handleChatCompletion(body: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const prompt = buildPromptFromMessages(body.messages);
@@ -27,6 +28,7 @@ export async function handleChatCompletion(body: ChatCompletionRequest): Promise
         maxTokens: body.max_tokens,
     });
 
+    // Main answering model: honour the client-requested model string.
     const initialModel: ModelConfig = {
         name: ollamaModelName,
         provider: 'ollama',
@@ -34,12 +36,23 @@ export async function handleChatCompletion(body: ChatCompletionRequest): Promise
         maxTokens: body.max_tokens,
     };
 
+    // Planning model: smaller/faster model.
+    const planningModel: ModelConfig = {
+        name: EXPERT_FAST_MODEL,
+        provider: 'ollama',
+        temperature: body.temperature,
+        maxTokens: body.max_tokens,
+    };
+
+    // Verifier & revision model: small reviewer model.
     const verifierModel: ModelConfig = {
-        name: ollamaModelName,
+        name: EXPERT_REVIEWER_MODEL,
         provider: 'ollama',
         temperature: 0,
         maxTokens: 256,
     };
+
+    const revisionModel: ModelConfig = verifierModel;
 
     const provider: LLMProvider = {
         name: 'ollama',
@@ -63,7 +76,7 @@ export async function handleChatCompletion(body: ChatCompletionRequest): Promise
         ladder: [initialModel],
     };
 
-    const result = await runOrchestrator(
+    const result = await runRecursiveSession(
         prompt,
         [],
         {
@@ -73,6 +86,8 @@ export async function handleChatCompletion(body: ChatCompletionRequest): Promise
             escalationPolicy,
             maxRetries: 2,
             minConfidence: 0.75,
+            planningModel,
+            revisionModel,
         }
     );
 

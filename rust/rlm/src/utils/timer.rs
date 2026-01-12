@@ -12,10 +12,6 @@ impl Timer {
         }
     }
 
-    pub fn reset(&mut self) {
-        self.start_time = Instant::now();
-    }
-
     pub fn elapsed_ms(&self) -> u128 {
         self.start_time.elapsed().as_millis()
     }
@@ -26,7 +22,7 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = T>,
 {
-    let mut timer = Timer::new();
+    let timer = Timer::new();
     let result = f().await;
     let duration = timer.elapsed_ms();
     (result, duration)

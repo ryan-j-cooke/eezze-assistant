@@ -1,5 +1,6 @@
 use crate::llm::types::{LLMChatRequest, LLMProvider};
-use crate::types::chat::ChatMessage;
+use crate::prompts::verify::VERIFY_PROMPT;
+use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
 
 pub struct VerificationRequest {
@@ -36,11 +37,11 @@ pub async fn verify_with_llm<P: LLMProvider + ?Sized>(
 fn build_verifier_messages(request: &VerificationRequest) -> Vec<ChatMessage> {
     vec![
         ChatMessage {
-            role: crate::types::chat::ChatRole::System,
-            content: "You are a strict verifier. Your job is to approve or reject answers. You must be conservative and reject if unsure.".to_string(),
+            role: ChatRole::System,
+            content: VERIFY_PROMPT.to_string(),
         },
         ChatMessage {
-            role: crate::types::chat::ChatRole::User,
+            role: ChatRole::User,
             content: format!(
                 "USER PROMPT:\n{}\n\nMODEL RESPONSE:\n{}\n\nREFERENCE CONTEXT:\n{}\n\nTASK:\n1. Is the response correct?\n2. Is it fully supported by the reference context?\n3. Does it avoid speculation or fabrication?\n\nRespond ONLY with valid JSON in the following format:\n{{\n  \"approved\": boolean,\n  \"confidence\": number,\n  \"notes\": string\n}}",
                 request.prompt,

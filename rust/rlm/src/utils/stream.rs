@@ -3,6 +3,7 @@
 use serde::Serialize;
 
 /// Simple representation of a server-sent event.
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 pub struct SseEvent<T: Serialize> {
     pub data: T,

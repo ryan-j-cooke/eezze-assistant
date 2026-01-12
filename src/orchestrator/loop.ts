@@ -12,6 +12,8 @@ import {
     escalateModel,
 } from './escalate';
 import { verifyWithLLM } from '../llm/verifier';
+import { generatePlan } from './plan';
+import { reviseResponse } from './revise';
 import { ChatMessage } from '../types/chat';
 import { ModelConfig } from '../types/config';
 
@@ -29,6 +31,11 @@ export interface LoopResult {
     model: string;
     confidence: number;
     attempts: number;
+}
+
+export interface RecursiveOptions extends LoopOptions {
+    planningModel?: ModelConfig;
+    revisionModel?: ModelConfig;
 }
 
 /**
@@ -184,6 +191,107 @@ export async function runOrchestrator(
         model: state.currentModel.name,
         confidence: lastConfidence,
         attempts: state.attempts,
+    };
+}
+
+/**
+ * Higher-level recursive session that adds an explicit planning and revision phase
+ * around the core orchestrator loop.
+ */
+export async function runRecursiveSession(
+    prompt: string,
+    context: string[],
+    options: RecursiveOptions
+): Promise<LoopResult> {
+    const planningModel = options.planningModel ?? options.initialModel;
+    const revisionModel = options.revisionModel ?? options.initialModel;
+    const minConfidence = options.minConfidence ?? 0.75;
+
+    // 1) Planning phase
+    logger.debug('orchestrator.plan.start', {
+        model: planningModel.name,
+    });
+
+    const planMessages = await generatePlan(
+        options.provider,
+        planningModel,
+        prompt
+    );
+
+    const planMessage = planMessages[planMessages.length - 1];
+    const enrichedContext: string[] = [
+        ...context,
+        `PLAN:\n${planMessage.content}`,
+    ];
+
+    logger.debug('orchestrator.plan.result', {
+        model: planningModel.name,
+        planPreview: planMessage.content.slice(0, 200),
+    });
+
+    // 2) Core orchestrator loop using the enriched context
+    const loopResult = await runOrchestrator(
+        prompt,
+        enrichedContext,
+        options
+    );
+
+    // 3) Final verification of the chosen answer
+    const finalVerdict = await verifyWithLLM(
+        options.provider,
+        options.verifierModel,
+        {
+            prompt,
+            response: loopResult.content,
+            context: enrichedContext,
+        }
+    );
+
+    const finalConfidence = combineConfidence({
+        verifierConfidence: finalVerdict.confidence,
+    });
+
+    logger.debug('orchestrator.final_verifier_result', {
+        approved: finalVerdict.approved,
+        verifierConfidence: finalVerdict.confidence,
+        combinedConfidence: finalConfidence,
+    });
+
+    if (
+        finalVerdict.approved &&
+        isConfidenceAcceptable(finalConfidence, minConfidence)
+    ) {
+        return {
+            ...loopResult,
+            confidence: finalConfidence,
+        };
+    }
+
+    // 4) Revision phase if the final answer is still not acceptable
+    logger.info('orchestrator.revise.start', {
+        model: revisionModel.name,
+    });
+
+    const revision = await reviseResponse(
+        options.provider,
+        revisionModel,
+        {
+            originalPrompt: prompt,
+            previousResponse: loopResult.content,
+            context: enrichedContext,
+            reviewerNotes: undefined,
+        }
+    );
+
+    logger.info('orchestrator.revise.result', {
+        model: revision.model,
+    });
+
+    return {
+        content: revision.content,
+        model: revision.model,
+        confidence: finalConfidence,
+        attempts: loopResult.attempts,
     };
 }
 

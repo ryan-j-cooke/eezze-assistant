@@ -7,7 +7,6 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
-use tokio::signal;
 
 mod api;
 mod llm;
@@ -133,14 +132,33 @@ async fn check_dependencies(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut required_models: HashSet<String> = HashSet::new();
 
+    // 1) Add all Ollama models declared in the runtime config file.
     for model in config.models.values() {
         if model.provider == Provider::Ollama {
             required_models.insert(model.name.clone());
         }
     }
 
-    required_models.insert(EXPERT_EMBEDDING_DEFAULT.to_string());
-    required_models.insert(EXPERT_RECURSIVE_LOCAL.to_string());
+    // 2) Add models from the user-level eezze config (~/.config/eezze/config.json)
+    //    so that CLI changes directly affect which models we depend on.
+    match crate::eezze_config::load_config() {
+        Ok(ee_cfg) => {
+            required_models.insert(ee_cfg.expert_recursive_local);
+            required_models.insert(ee_cfg.expert_fast_model);
+            required_models.insert(ee_cfg.expert_reviewer_model);
+            required_models.insert(ee_cfg.expert_embedding_default);
+        }
+        Err(err) => {
+            eprintln!(
+                "startup.eezzeConfig.load_failed: {} (falling back to built-in defaults)",
+                err
+            );
+            required_models.insert(EXPERT_RECURSIVE_LOCAL.to_string());
+            required_models.insert(EXPERT_FAST_MODEL.to_string());
+            required_models.insert(EXPERT_REVIEWER_MODEL.to_string());
+            required_models.insert(EXPERT_EMBEDDING_DEFAULT.to_string());
+        }
+    }
 
     let required_list: Vec<String> = required_models.iter().cloned().collect();
 
@@ -222,7 +240,7 @@ async fn shutdown_signal() {
 
     #[cfg(not(unix))]
     {
-        signal::ctrl_c()
+        tokio::signal::ctrl_c()
             .await
             .expect("failed to install CTRL+C handler");
         println!("🛑 Received CTRL+C, shutting down...");

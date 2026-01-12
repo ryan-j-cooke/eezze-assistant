@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::types::chat::ChatMessage;
 use crate::types::config::ModelConfig;
 

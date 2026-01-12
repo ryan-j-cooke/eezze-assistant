@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::llm::ollama::ollama_chat;
 use crate::llm::types::{LLMChatRequest, LLMChatResponse, LLMProvider};
 use crate::orchestrator::escalate::EscalationPolicy;
-use crate::orchestrator::r#loop::{run_orchestrator, LoopOptions};
+use crate::orchestrator::r#loop::{run_recursive_session, RecursiveOptions};
 use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChatRole};
 use crate::types::config::{ModelConfig, ModelProvider};
 use crate::utils::{logger, timer};
@@ -59,6 +59,10 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         })),
     );
 
+    // Load phase-specific models from user-level eezze config, falling back to defaults.
+    let ee_cfg = crate::eezze_config::load_config().unwrap_or_default();
+
+    // Main answering model: honour the client-requested model string.
     let initial_model = ModelConfig {
         name: ollama_model_name.clone(),
         provider: ModelProvider::Ollama,
@@ -66,12 +70,23 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         max_tokens: body.max_tokens,
     };
 
+    // Planning model: smaller/faster model.
+    let planning_model = ModelConfig {
+        name: ee_cfg.expert_fast_model.clone(),
+        provider: ModelProvider::Ollama,
+        temperature: body.temperature,
+        max_tokens: body.max_tokens,
+    };
+
+    // Verifier & revision model: small reviewer model.
     let verifier_model = ModelConfig {
-        name: ollama_model_name.clone(),
+        name: ee_cfg.expert_reviewer_model.clone(),
         provider: ModelProvider::Ollama,
         temperature: Some(0.0),
         max_tokens: Some(256),
     };
+
+    let revision_model = verifier_model.clone();
 
     let provider = OllamaProvider {
         client: Client::new(),
@@ -82,13 +97,15 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         ladder: vec![initial_model.clone()],
     };
 
-    let result = run_orchestrator(
+    let result = run_recursive_session(
         &prompt,
         &[],
-        LoopOptions {
+        RecursiveOptions {
             provider: &provider,
+            planning_model: planning_model.clone(),
             initial_model: initial_model.clone(),
             verifier_model: verifier_model.clone(),
+            revision_model: revision_model.clone(),
             escalation_policy,
             max_retries: Some(2),
             min_confidence: Some(0.75),

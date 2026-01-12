@@ -13,6 +13,7 @@ use crate::index::retrieve::review_response;
 use crate::types::chat::{ChatMessage, ChatRole};
 use crate::types::config::ModelConfig;
 use crate::utils::logger;
+use crate::utils::stream::make_status_chunk;
 
 pub struct LoopOptions<'a, P: LLMProvider + ?Sized> {
     pub provider: &'a P,
@@ -21,6 +22,7 @@ pub struct LoopOptions<'a, P: LLMProvider + ?Sized> {
     pub escalation_policy: EscalationPolicy,
     pub max_retries: Option<u32>,
     pub min_confidence: Option<f64>,
+    pub on_status: Option<&'a Box<dyn Fn(String) + Send + Sync>>,
 }
 
 pub struct LoopResult {
@@ -39,6 +41,7 @@ pub struct RecursiveOptions<'a, P: LLMProvider + ?Sized> {
     pub escalation_policy: EscalationPolicy,
     pub max_retries: Option<u32>,
     pub min_confidence: Option<f64>,
+    pub on_status: Option<Box<dyn Fn(String) + Send + Sync>>,
 }
 
 #[allow(unused_assignments)]
@@ -54,6 +57,10 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
 
     let max_retries = options.max_retries.unwrap_or(2);
     let min_confidence = options.min_confidence.unwrap_or(0.75);
+
+    if let Some(ref on_status) = options.on_status {
+        on_status(make_status_chunk("Starting reasoning loop".to_string(), Some("orchestrator")));
+    }
 
     logger::debug(
         "orchestrator.start",
@@ -71,6 +78,13 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
 
     loop {
         state.attempts += 1;
+
+        if let Some(ref on_status) = options.on_status {
+            on_status(make_status_chunk(
+                format!("Attempt {} with model {}", state.attempts, state.current_model.name),
+                Some("orchestrator"),
+            ));
+        }
 
         logger::debug(
             "orchestrator.iteration",
@@ -221,6 +235,10 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
         })),
     );
 
+    if let Some(ref on_status) = options.on_status {
+        on_status(make_status_chunk("Generating plan...".to_string(), Some("planning")));
+    }
+
     let plan_messages = generate_plan(options.provider, planning_model.clone(), prompt).await?;
     let plan_message = plan_messages
         .last()
@@ -249,11 +267,16 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
             escalation_policy: options.escalation_policy,
             max_retries: options.max_retries,
             min_confidence: options.min_confidence,
+            on_status: options.on_status.as_ref(),
         },
     )
     .await?;
 
     // 3) Final verification of the chosen answer (LLM verifier + embeddings)
+    if let Some(ref on_status) = options.on_status {
+        on_status(make_status_chunk("Verifying answer...".to_string(), Some("verification")));
+    }
+
     let final_verdict = verify_with_llm(
         options.provider,
         options.verifier_model.clone(),
@@ -304,6 +327,10 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
             "model": revision_model.name,
         })),
     );
+
+    if let Some(ref on_status) = options.on_status {
+        on_status(make_status_chunk("Revising answer...".to_string(), Some("revision")));
+    }
 
     let revision = revise_response(
         options.provider,

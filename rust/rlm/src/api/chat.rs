@@ -17,8 +17,10 @@ use crate::types::chat::{ChatCompletionRequest, ChatCompletionResponse, ChatMess
 use crate::types::config::{ModelConfig, ModelProvider};
 use crate::utils::{logger, timer};
 use crate::utils::stream::format_sse_event;
+use crate::utils::lang::classify_text;
 
 use reqwest::Client;
+use std::sync::{Arc, Mutex};
 
 struct OllamaProvider {
     client: Client,
@@ -40,8 +42,20 @@ impl LLMProvider for OllamaProvider {
     }
 }
 
-async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<ChatCompletionResponse> {
+async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<Vec<String>> {
     let prompt = build_prompt_from_messages(&body.messages);
+
+    // Detect language only for the initial prompt (first user message)
+    let language = if let Some(first_user_message) = body.messages.iter().find(|m| matches!(m.role, ChatRole::User)) {
+        classify_text(&first_user_message.content).await
+    } else {
+        "en".to_string()
+    };
+
+    logger::info(
+        "chat.completion.language_detected",
+        Some(json!({ "language": language })),
+    );
 
     let raw_model = body.model.clone();
     let client_model_id = raw_model.clone();
@@ -97,6 +111,10 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         ladder: vec![initial_model.clone()],
     };
 
+    // Buffer to collect status SSE chunks
+    let status_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let status_chunks_clone = Arc::clone(&status_chunks);
+
     let result = run_recursive_session(
         &prompt,
         &[],
@@ -109,6 +127,11 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
             escalation_policy,
             max_retries: Some(2),
             min_confidence: Some(0.75),
+            on_status: Some(Box::new(move |chunk: String| {
+                if let Ok(mut guard) = status_chunks_clone.lock() {
+                    guard.push(chunk);
+                }
+            })),
         },
     )
     .await?;
@@ -125,6 +148,7 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         })),
     );
 
+    // Build the final OpenAI-compatible response
     let api_response = ChatCompletionResponse {
         id: format!("chatcmpl-{}", Uuid::new_v4()),
         object: "chat.completion".to_string(),
@@ -140,7 +164,19 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<C
         }],
     };
 
-    Ok(api_response)
+    // Return buffered status chunks followed by the final response chunks
+    let mut out = Vec::new();
+    if let Ok(guard) = status_chunks.lock() {
+        out.extend(guard.iter().cloned());
+    }
+    // Convert final response into two SSE chunks (role + content)
+    let id = &api_response.id;
+    let model = &api_response.model;
+    let choice = api_response.choices.first().unwrap();
+    out.push(crate::utils::stream::make_chat_chunk(id, model, None, None)); // role-only (delta empty)
+    out.push(crate::utils::stream::make_chat_chunk(id, model, Some(choice.message.content.clone()), Some("stop")));
+    out.push("data: [DONE]\n\n".to_string());
+    Ok(out)
 }
 
 fn build_prompt_from_messages(messages: &[ChatMessage]) -> String {
@@ -190,83 +226,17 @@ async fn chat_completions_handler(
     let (result, duration_ms) = timer::measure(|| handle_chat_completion(body)).await;
 
     match result {
-        Ok(api_response) => {
+        Ok(chunks) => {
             logger::info(
                 "chat.completion.success",
                 Some(json!({ "latencyMs": duration_ms })),
             );
 
-            // Build SSE chunks equivalent to the TS implementation.
-            let first_choice = match api_response.choices.get(0) {
-                Some(c) => c,
-                None => {
-                    // Should not happen, but safeguard: return an error event.
-                    let mut res = Response::new(Body::from(format_sse_event(&json!({
-                        "error": {
-                            "message": "No choices in completion response",
-                            "type": "internal_error",
-                        }
-                    }))));
-                    *res.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-                    let headers = res.headers_mut();
-                    headers.insert(
-                        "Content-Type",
-                        HeaderValue::from_static("text/event-stream"),
-                    );
-                    headers.insert(
-                        "Cache-Control",
-                        HeaderValue::from_static("no-cache"),
-                    );
-                    headers.insert(
-                        "Connection",
-                        HeaderValue::from_static("keep-alive"),
-                    );
-                    return res;
-                }
-            };
-
-            // First chunk: role only.
-            let role_chunk = json!({
-                "id": api_response.id,
-                "object": "chat.completion.chunk",
-                "created": api_response.created,
-                "model": api_response.model,
-                "choices": [
-                    {
-                        "index": first_choice.index,
-                        "delta": {
-                            "role": match first_choice.message.role {
-                                ChatRole::System => "system",
-                                ChatRole::User => "user",
-                                ChatRole::Assistant => "assistant",
-                            },
-                        },
-                        "finish_reason": serde_json::Value::Null,
-                    }
-                ],
-            });
-
-            // Second chunk: content with finish_reason.
-            let content_chunk = json!({
-                "id": api_response.id,
-                "object": "chat.completion.chunk",
-                "created": api_response.created,
-                "model": api_response.model,
-                "choices": [
-                    {
-                        "index": first_choice.index,
-                        "delta": {
-                            "content": first_choice.message.content,
-                        },
-                        "finish_reason": "stop",
-                    }
-                ],
-            });
-
+            // Stream all collected SSE chunks (status + final response)
             let mut body_str = String::new();
-            body_str.push_str(&format_sse_event(&role_chunk));
-            body_str.push_str(&format_sse_event(&content_chunk));
-            body_str.push_str("data: [DONE]\n\n");
+            for chunk in chunks {
+                body_str.push_str(&chunk);
+            }
 
             let mut res = Response::new(Body::from(body_str));
             let headers = res.headers_mut();

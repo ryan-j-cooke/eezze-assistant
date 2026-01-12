@@ -30,15 +30,20 @@ pub struct StatusEvent {
     pub step: Option<&'static str>,
 }
 
-/// Helper to create a status SSE chunk (consistent with chat endpoint format).
-pub fn make_status_sse(message: String, phase: Option<&'static str>, step: Option<&'static str>) -> String {
+/// Helper to create and emit a status SSE chunk (consistent with chat endpoint format).
+/// The `emit` callback is called with the SSE string so the caller can stream it immediately.
+pub fn make_status_sse<F>(message: String, phase: Option<&'static str>, step: Option<&'static str>, emit: F)
+where
+    F: FnOnce(String),
+{
     let ev = StatusEvent {
         event_type: "status",
         message,
         phase,
         step,
     };
-    format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default())
+    let sse = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
+    emit(sse);
 }
 
 async fn list_models() -> Json<ModelsResponse> {

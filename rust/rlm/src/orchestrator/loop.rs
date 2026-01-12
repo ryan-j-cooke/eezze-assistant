@@ -59,7 +59,9 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
     let min_confidence = options.min_confidence.unwrap_or(0.75);
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_sse("Starting reasoning loop".to_string(), Some("orchestrator"), None));
+        make_status_sse("Starting reasoning loop".to_string(), Some("orchestrator"), None, |sse| {
+            on_status(sse);
+        });
     }
 
     logger::debug(
@@ -80,11 +82,12 @@ pub async fn run_orchestrator<P: LLMProvider + ?Sized>(
         state.attempts += 1;
 
         if let Some(ref on_status) = options.on_status {
-            on_status(make_status_sse(
+            make_status_sse(
                 format!("Attempt {} with model {}", state.attempts, state.current_model.name),
                 Some("orchestrator"),
                 None,
-            ));
+                |sse| on_status(sse),
+            );
         }
 
         logger::debug(
@@ -237,7 +240,9 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
     );
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_sse("Generating plan...".to_string(), Some("planning"), None));
+        make_status_sse("Generating plan...".to_string(), Some("planning"), None, |sse| {
+            on_status(sse);
+        });
     }
 
     let plan_messages = generate_plan(options.provider, planning_model.clone(), prompt).await?;
@@ -275,7 +280,9 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
 
     // 3) Final verification of the chosen answer (LLM verifier + embeddings)
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_sse("Verifying answer...".to_string(), Some("verification"), None));
+        make_status_sse("Verifying answer...".to_string(), Some("verification"), None, |sse| {
+            on_status(sse);
+        });
     }
 
     let final_verdict = verify_with_llm(
@@ -330,7 +337,9 @@ pub async fn run_recursive_session<P: LLMProvider + ?Sized>(
     );
 
     if let Some(ref on_status) = options.on_status {
-        on_status(make_status_sse("Revising answer...".to_string(), Some("revision"), None));
+        make_status_sse("Revising answer...".to_string(), Some("revision"), None, |sse| {
+            on_status(sse);
+        });
     }
 
     let revision = revise_response(

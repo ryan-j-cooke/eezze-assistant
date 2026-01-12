@@ -18,6 +18,7 @@ use crate::types::config::{ModelConfig, ModelProvider};
 use crate::utils::{logger, timer};
 use crate::utils::stream::format_sse_event;
 use crate::utils::lang::classify_text;
+use crate::api::models::make_status_sse;
 
 use reqwest::Client;
 use std::sync::{Arc, Mutex};
@@ -224,11 +225,10 @@ async fn chat_completions_handler(
     }
 
     // Emit an initial "starting" status so VS Code always gets a valid SSE stream
-    let mut chunks = vec![crate::api::models::make_status_sse(
-        "Starting request...".to_string(),
-        Some("init"),
-        None,
-    )];
+    let mut chunks = vec![];
+    make_status_sse("Starting request...".to_string(), Some("init"), None, |sse| {
+        chunks.push(sse);
+    });
 
     let (result, duration_ms) = timer::measure(|| handle_chat_completion(body)).await;
 

@@ -19,9 +19,13 @@ use crate::utils::{logger, timer};
 use crate::utils::stream::format_sse_event;
 use crate::utils::lang::classify_text;
 use crate::api::models::make_status_sse;
+use crate::prompts::completion::code_editor_system_instruction;
+use crate::state::set_project_from_request;
 
 use reqwest::Client;
 use std::sync::{Arc, Mutex};
+use std::fs;
+use std::path::Path;
 
 struct OllamaProvider {
     client: Client,
@@ -43,20 +47,53 @@ impl LLMProvider for OllamaProvider {
     }
 }
 
+fn extract_and_load_attachments(messages: &[ChatMessage]) -> String {
+    if let Some(last) = messages.last() {
+        if last.role == ChatRole::User {
+            let content = &last.content;
+            // Simple regex to find <attachment> blocks with file attributes
+            if let Some(start) = content.find("<attachments>") {
+                if let Some(end) = content.find("</attachments>") {
+                    let block = &content[start..end + 13];
+                    // Extract file path from file="..."
+                    if let Some(file_start) = block.find("file=\"") {
+                        let after = &block[file_start + 6..];
+                        if let Some(file_end) = after.find("\"") {
+                            let file_path = &after[..file_end];
+                            // Try to read the file and return its content
+                            if let Ok(file_content) = fs::read_to_string(file_path) {
+                                return file_content;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    String::new()
+}
+
 async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<Vec<String>> {
+    // Register project from workspace_info if present
+    set_project_from_request(&body.messages);
+
     let prompt = build_prompt_from_messages(&body.messages);
 
-    // Detect language only for the initial prompt (first user message)
-    let language = if let Some(first_user_message) = body.messages.iter().find(|m| matches!(m.role, ChatRole::User)) {
-        classify_text(&first_user_message.content).await
-    } else {
-        "en".to_string()
-    };
-
+    // Detect language for initial prompt only
+    let language = classify_text(&prompt).await;
     logger::info(
         "chat.completion.language_detected",
         Some(json!({ "language": language })),
     );
+
+    // Insert system instruction here
+    let attachment_content = extract_and_load_attachments(&body.messages);
+    let base_prompt = if attachment_content.is_empty() {
+        prompt.clone()
+    } else {
+        format!("{}\n\n--- File content ---\n{}", prompt, attachment_content)
+    };
+    let enriched_prompt = format!("{}\n\n{}", code_editor_system_instruction(), base_prompt);
 
     let raw_model = body.model.clone();
     let client_model_id = raw_model.clone();
@@ -75,7 +112,7 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<V
     );
 
     // Load phase-specific models from user-level eezze config, falling back to defaults.
-    let ee_cfg = crate::eezze_config::load_config().unwrap_or_default();
+    let _ee_cfg = crate::eezze_config::load_config().unwrap_or_default();
 
     // Main answering model: honour the client-requested model string.
     let initial_model = ModelConfig {
@@ -87,7 +124,7 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<V
 
     // Planning model: smaller/faster model.
     let planning_model = ModelConfig {
-        name: ee_cfg.expert_fast_model.clone(),
+        name: "qwen2.5:1.5b".to_string(),
         provider: ModelProvider::Ollama,
         temperature: body.temperature,
         max_tokens: body.max_tokens,
@@ -95,30 +132,32 @@ async fn handle_chat_completion(body: ChatCompletionRequest) -> anyhow::Result<V
 
     // Verifier & revision model: small reviewer model.
     let verifier_model = ModelConfig {
-        name: ee_cfg.expert_reviewer_model.clone(),
+        name: "qwen2.5:0.5b".to_string(),
         provider: ModelProvider::Ollama,
         temperature: Some(0.0),
         max_tokens: Some(256),
     };
 
-    let revision_model = verifier_model.clone();
+    let revision_model = ModelConfig {
+        name: "qwen2.5:3b".to_string(),
+        provider: ModelProvider::Ollama,
+        temperature: body.temperature,
+        max_tokens: body.max_tokens,
+    };
 
     let provider = OllamaProvider {
         client: Client::new(),
     };
 
-    let escalation_policy = EscalationPolicy {
-        max_attempts: 2,
-        ladder: vec![initial_model.clone()],
-    };
+    let escalation_policy = EscalationPolicy::default();
 
     // Buffer to collect status SSE chunks
     let status_chunks: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let status_chunks_clone = Arc::clone(&status_chunks);
 
     let result = run_recursive_session(
-        &prompt,
-        &[],
+        &enriched_prompt,
+        &[], // No context field in ChatCompletionRequest
         RecursiveOptions {
             provider: &provider,
             planning_model: planning_model.clone(),
@@ -200,9 +239,19 @@ pub fn register_chat_routes(app: Router) -> Router {
     app.route("/v1/chat/completions", post(chat_completions_handler))
 }
 
+fn save_request_for_dev(body: &ChatCompletionRequest) {
+    let path = Path::new("dev_request.json");
+    if let Ok(json) = serde_json::to_string_pretty(body) {
+        let _ = fs::write(path, json);
+    }
+}
+
 async fn chat_completions_handler(
     Json(body): Json<ChatCompletionRequest>,
 ) -> Response {
+    // Save request for debugging
+    save_request_for_dev(&body);
+
     // Mirror TypeScript behavior: stream SSE chunks instead of plain JSON.
     if body.messages.is_empty() {
         let mut res = Response::new(Body::from(

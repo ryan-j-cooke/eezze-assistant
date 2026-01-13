@@ -1,15 +1,16 @@
 use crate::types::config::ModelConfig;
 
-#[derive(Clone)]
 pub struct EscalationState {
     pub current_model: ModelConfig,
     pub attempts: u32,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EscalationPolicy {
     pub max_attempts: u32,
     pub ladder: Vec<ModelConfig>,
+    pub max_model: String,
+    pub fallback_models: Vec<String>,
 }
 
 pub fn can_escalate(state: &EscalationState, policy: &EscalationPolicy) -> bool {

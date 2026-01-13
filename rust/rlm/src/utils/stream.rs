@@ -32,6 +32,8 @@ pub struct ChatCompletionDelta {
     pub role: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 /// Format an SSE data line ("data: ...\n\n").
@@ -51,8 +53,28 @@ pub fn make_chat_chunk(id: &str, model: &str, content: Option<String>, finish_re
             delta: ChatCompletionDelta {
                 role: None,
                 content,
+                thinking: None,
             },
             finish_reason,
+        }],
+    };
+    format_sse_event(&chunk)
+}
+
+pub fn make_thinking_chunk(id: &str, model: &str, thinking: String) -> String {
+    let chunk = ChatCompletionChunk {
+        id: id.to_string(),
+        object: "chat.completion.chunk",
+        created: chrono::Utc::now().timestamp(),
+        model: model.to_string(),
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: None,
+                content: None,
+                thinking: Some(thinking),
+            },
+            finish_reason: None,
         }],
     };
     format_sse_event(&chunk)

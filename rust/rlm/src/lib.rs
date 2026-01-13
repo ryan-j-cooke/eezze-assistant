@@ -6,6 +6,7 @@ mod types;
 mod index;
 mod utils;
 mod prompts;
+mod state;
 pub mod eezze_config;
 
 mod rlm_server;

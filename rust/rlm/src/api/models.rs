@@ -30,19 +30,15 @@ pub struct StatusEvent {
     pub step: Option<&'static str>,
 }
 
-/// Helper to create and emit a status SSE chunk (consistent with chat endpoint format).
+/// Helper to create and emit a status message as a thinking chunk (so VS Code can display it separately from final content).
 /// The `emit` callback is called with the SSE string so the caller can stream it immediately.
-pub fn make_status_sse<F>(message: String, phase: Option<&'static str>, step: Option<&'static str>, emit: F)
+pub fn make_status_sse<F>(message: String, _phase: Option<&'static str>, _step: Option<&'static str>, emit: F)
 where
     F: FnOnce(String),
 {
-    let ev = StatusEvent {
-        event_type: "status",
-        message,
-        phase,
-        step,
-    };
-    let sse = format!("data: {}\n\n", serde_json::to_string(&ev).unwrap_or_default());
+    // Use a temporary ID for thinking chunks; real chat chunks will use the final ID later
+    let temp_id = "status-temp";
+    let sse = crate::utils::stream::make_thinking_chunk(temp_id, "status", message);
     emit(sse);
 }
 

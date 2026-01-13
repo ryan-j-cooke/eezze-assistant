@@ -23,6 +23,7 @@ use tokio::runtime::Runtime;
 
 use eezze::run_rlm_server;
 use eezze::eezze_config::{ensure_config_exists, save_config};
+use eezze::state::PROJECT_STATE;
 
 /// eezze CLI - helper around Ollama and the recursive LLM server.
 #[derive(Parser, Debug)]
@@ -486,9 +487,20 @@ fn serve_ollama() -> Result<()> {
                 let top_text = app.top_lines[top_start..].join("\n");
                 let bottom_text = app.bottom_lines[bottom_start..].join("\n");
 
+                // Append project path if known
+                let bottom_with_project = if let Ok(state) = PROJECT_STATE.lock() {
+                    if let Some(root) = state.get_workspace_root() {
+                        format!("{}\n📁 Project: {}", bottom_text, root)
+                    } else {
+                        bottom_text
+                    }
+                } else {
+                    bottom_text
+                };
+
                 let top_paragraph = Paragraph::new(top_text)
                     .block(Block::default().borders(Borders::ALL).title("Ollama"));
-                let bottom_paragraph = Paragraph::new(bottom_text)
+                let bottom_paragraph = Paragraph::new(bottom_with_project)
                     .block(Block::default().borders(Borders::ALL).title("rlm"));
 
                 f.render_widget(top_paragraph, chunks[0]);
